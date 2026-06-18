@@ -7,6 +7,141 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`ml upgrade --json` key canonicalized to `up_to_date`** (closes mulch-4ca6): the `upgrade` JSON output previously emitted `upToDate` (camelCase) while `ml onboard --json` emitted the same concept as the snake_case action value `up_to_date`. The `upgrade` payload now uses `up_to_date` to match the rest of mulch's snake_case JSON convention (e.g. `not_installed`, `default_mode`, `extracts_files`). Consumers that read `parsed.upToDate` must switch to `parsed.up_to_date`; the boolean semantics are unchanged.
+
+## [0.10.7] - 2026-06-02
+
+A targeted bug-fix release. Published consumers of `@os-eco/mulch-cli` running in an interactive TTY hit pino's pretty-transport path even though `pino-pretty` ships only as a devDependency, causing pino to throw `unable to determine transport target for "pino-pretty"`. The diagnostic logger now probes `pino-pretty` resolvability and degrades to JSON-on-stderr when it is absent, honoring the documented JSON-for-consumers promise. No schema, hook-event, config-key, or public CLI-command changes. 1497 tests across 71 files / 3854 expect() calls (up from 1494 / 71 / 3849 in 0.10.6).
+
+### Fixed
+
+- **`src/log.ts` — JSON fallback when `pino-pretty` is unavailable** (closes mulch-35c9): `pino-pretty` is a devDependency, so published consumers running in an interactive TTY previously crashed when the logger selected the pretty transport. `createLogger()` now gates the pretty path on a new `isPinoPrettyAvailable()` probe (`createRequire(...).resolve("pino-pretty")`) and falls back to newline-delimited JSON on stderr when the package is absent. Adds a test-injectable `prettyAvailable` option to `createLogger()` and exports `isPinoPrettyAvailable()`.
+
+## [0.10.6] - 2026-05-28
+
+The **Level 5 agent-readiness uplift** (validation mission VAL-MULCH-*): mulch adopts the portable L5 toolkit from the os-eco `templates/l5-toolkit/` tree — a structured diagnostic logger, ratchet/reporter scripts with baselined budgets, governance config, and operator docs. No schema, hook-event, config-key, or public CLI-command changes; the only runtime-visible addition is a stderr diagnostic channel gated behind `MULCH_DEBUG`. 1494 tests across 71 files / 3849 expect() calls (up from 1482 / 70 / 3831 in 0.10.5).
+
+### Added
+
+#### Structured diagnostic logging
+
+- **`src/log.ts` — pino-based diagnostic logger** (`pino` is now a runtime dependency): a *diagnostics-only* channel, distinct from mulch's product output. User-facing output (`ml prime` markdown, status tables, `--json` results, hints) still goes straight to stdout via `console.log` / `outputJson`; the logger writes exclusively to **stderr** (fd 2) so it can never collide with the CLI result or corrupt `--json` consumers. Silent at `info` for routine internals — those log at `debug`, gated behind `MULCH_DEBUG`. Level resolution: `MULCH_LOG_LEVEL` wins, else `debug` when `MULCH_DEBUG` is set, else `info`. Dev TTYs render via `pino-pretty` (a devDep, never shipped to consumers); CI / non-TTY / production emit newline-delimited JSON. Exports `createLogger()` (test-injectable destination + env), `resolveLogLevel()`, `redactDbUrl()`, and `REDACT_PATHS` (password / token / apiKey / secret / auth headers redaction).
+- **Hook-execution diagnostics in `src/utils/hooks.ts`**: each hook run now emits a `log.debug` trace (event, command, exitCode, durationMs, timedOut) and a `log.warn` on non-zero/timeout exit (with the `blocking` flag). Logging runs outside the expertise-file write lock, so it can never contend with a concurrent writer. Silent at the default level; surfaces under `MULCH_DEBUG`.
+- **`src/cli.ts` registry-init failure path**: now emits a gated `log.debug` diagnostic alongside the formatted human error; in `--json` mode the structured log is intentionally skipped so stderr carries only the machine-readable error object.
+
+#### L5 ratchet & reporter scripts
+
+- **Ratchet scripts** with co-located test suites and baselined budgets: `scripts/check-file-sizes.ts` (`scripts/file-size-budgets.json`), `scripts/check-debt-markers.ts` (`scripts/debt-markers-budget.json`), `scripts/check-coverage.ts` (`scripts/coverage-budgets.json`), and `scripts/validate-agents-md.ts`.
+- **Reporters**: `scripts/report-test-timing.ts` and `scripts/report-quality-metrics.ts`.
+- **`package.json` check/report scripts**: `check:size`, `check:debt`, `check:dups` (jscpd), `check:deps` (knip), `check:coverage`, `check:agents`, the aggregate `check:all`, `report:timing`, `report:quality`, `test:ci` (coverage + junit), and a `prepare` script that points `core.hooksPath` at `scripts/hooks`.
+
+#### Governance & config baselines
+
+- **CI / repo governance**: extended `.github/workflows/ci.yml` (pinned `bun-version`, `check:all` wiring), `.github/dependabot.yml` (cooldown), `.github/labels.yml` + `.github/workflows/sync-labels.yml`, and a `scripts/hooks/pre-commit` hook.
+- **Tooling baselines**: `.jscpd.json`, `knip.json`, `bunfig.toml`, extended `biome.json`, `.devcontainer/devcontainer.json`, `.env.example`, and an extended `.gitignore`.
+- **Operator docs**: `AGENTS.md`, `RUNBOOK.md`, and the first `.factory/skills/mulch-record-from-evidence/SKILL.md`.
+- **devDependencies**: `jscpd`, `knip`, `pino-pretty`.
+
+### Fixed
+
+- **`test/log.test.ts` discovery** (sd mulch-3fd5): moved the logger test under `test/` so default `bun test` discovers it, and corrected its import to `../src/log.ts`.
+
+### Changed
+
+- **README**: removed a broken os-eco logo embed.
+
+### Testing
+
+- 1494 tests across 71 files, 3849 expect() calls (up from 1482 / 70 / 3831 in 0.10.5).
+- New `test/log.test.ts` (95 lines) exercising `createLogger` with injected destinations/env, level resolution, redaction paths, and `redactDbUrl` edge cases — all via real streams, no mocks.
+- New co-located ratchet/reporter test suites: `scripts/check-file-sizes.test.ts`, `scripts/check-debt-markers.test.ts`, `scripts/check-coverage.test.ts`, `scripts/validate-agents-md.test.ts`, `scripts/report-quality-metrics.test.ts`, `scripts/report-test-timing.test.ts`.
+
+## [0.10.5] - 2026-05-28
+
+A nightwatch hardening release out of plan pl-7a81 (parent mulch-e7f6): strict regex parsing for `--outcome-duration` / `--duration` (#37), normalized fatal-error coloring across the remaining CLI sites (#38), file-path context in Claude `settings.json` parse errors (#39), and `--json` honored by the deprecated `mulch update` command (#40). No schema, hook, config, or public command surface changes. 1482 tests across 70 files / 3831 expect() calls (up from 1460 / 69 / 3778 in 0.10.4).
+
+### Added
+
+- **`src/utils/numeric-flags.ts`** (mulch-5b9c, #37): extracts `parseStrictPositiveInt` and `parseStrictNonNegativeNumber` — regex-gated parsers used by `record` / `edit` / `outcome` for `--outcome-duration` / `--duration`. Mirrors the inline parsers already in `ready` / `prime` / `compact` / `rank` (mx-5b9578) and is the first time the convention has been shared via a util module.
+
+### Fixed
+
+- **`--outcome-duration` / `--duration` silently accepted garbage input** (mulch-5b9c, #37): `record`, `edit`, and `outcome` parsed these flags with bare `Number.parseFloat`, so `--outcome-duration 10abc` wrote `10` and `--duration 3.7xyz` wrote `3.7` to `.mulch/expertise/*.jsonl`. They now go through `parseStrictNonNegativeNumber` and reject anything that isn't a clean non-negative number with `--<flag> must be a non-negative number (got "<raw>")`, exit `1`, and write nothing. `--json` mode emits the standard error envelope on stderr.
+- **Fatal-error stderr coloring was inconsistent** (mulch-2a17, #38): the remaining plain `console.error("Error: …")` sites in `query.ts`, `prime.ts`, `search.ts`, and several other commands now wrap fatal messages in `chalk.red(...)`, matching the convention used by `record` / `sync` / `validate`. No wording changes; `--json` error envelopes are unchanged (chalk only applies to the human-readable branch).
+- **Claude `settings.json` parse errors lacked file-path context** (mulch-1b36, #39): a corrupted `.claude/settings.json` used to surface as a bare `Unexpected token …` from `JSON.parse`. The Claude recipe's install / check / remove now route through a `parseClaudeSettings()` helper that rethrows as `Failed to parse Claude settings at <absolute-path>: <reason>`, matching the `file:line` context convention `readExpertiseFile` already uses (mx-7c199c).
+- **`mulch update` ignored `--json`** (mulch-a8cd, #40): the deprecated `update` command always printed its yellow deprecation warning to stdout, breaking the JSON-output contract every other command honors. When `--json` is active it now emits `{success:false, command:"update", error:…}` to stderr via `outputJsonError` and exits `1`; the human-readable yellow warning is unchanged.
+
+### CI
+
+- **Pin `bun-version` in `.github/workflows/ci.yml`** (#39): `setup-bun@v2` was reading `engines.bun` (`>=1.0.0`) and resolving the range via the GitHub tags API, which intermittently 404s and reds the job. Explicit `bun-version` skips that range-resolution path.
+
+### Testing
+
+- 1482 tests across 70 files, 3831 expect() calls (up from 1460 / 69 / 3778 in 0.10.4).
+- New `test/utils/numeric-flags.test.ts` covering both parsers' accept/reject boundaries.
+- New spawn-integration tests in `test/commands/record.test.ts`, `test/commands/edit.test.ts`, and `test/commands/outcome.test.ts` asserting (a) invalid `--outcome-duration` / `--duration` exits non-zero and writes no record/outcome, (b) valid inputs round-trip unchanged, (c) `--json` mode produces the standard error envelope on stderr.
+- New `test/commands/setup.test.ts` cases covering the wrapped Claude `settings.json` parse error (path is present, original `SyntaxError` reason is preserved).
+- New `test/commands/update.test.ts` cases for the deprecated command honoring `--json`.
+
+## [0.10.4] - 2026-05-27
+
+A discoverability fix for `ml record --type convention` (plan pl-21a3, parent mulch-4f80): adds a named `--content <text>` flag and replaces the tautological missing-content error with a concrete retry example. No schema, hook, or config changes. 1460 tests across 69 files / 3778 expect() calls (up from 1453 / 69 / 3749 in 0.10.3).
+
+### Added
+
+- **`ml record --content <text>` flag for convention records** (mulch-6871, #32): convention's required `content` field used to be reachable only via a positional argument, which made it undiscoverable from `--help`. `--content` is now a first-class named option; the positional form still works, and an explicit `--content` wins when both are supplied (read first inside `collectField`). After-help block updated to show `convention   --content (or positional [content])`; `--content` threaded through `buildRetryCommand` so retry hints preserve it.
+
+### Fixed
+
+- **Missing-content error for `ml record convention` now names the flag and shows a retry command** (mulch-2f54, #33): the validation message used to read `convention records require: content (or positional content for content).` — tautological, and it never named the actual CLI flag. It now reads `convention records are missing required flag(s): --content.` followed by an inline `Retry: ml record <domain> --type convention --content "<content>"` example. The `--json` error path emits the same shape on stderr.
+
+### Testing
+
+- 1460 tests across 69 files, 3778 expect() calls (up from 1453 / 69 / 3749 in 0.10.3). New `--content flag for convention (pl-21a3)` describe block in `test/commands/record.test.ts` (mulch-ca83, #34): 7 tests covering the named flag write path, positional regression guard, explicit-flag-wins-over-positional precedence, the rewritten missing-content error (both text and `--json` shapes), and `--help` registration of `--content <content>` plus the updated after-help line.
+
+## [0.10.3] - 2026-05-27
+
+A hardening release out of nightwatch plan pl-c92f: tighter numeric-flag parsing in `ml ready` / `ml prime` / `ml compact`, a prerelease-aware `compareSemver`, conversion of the last `execSync` call site to `execFileSync`, and direct unit coverage for two previously transitively-tested utility modules. No public CLI surface, schema, hook, or config changes. 1453 tests across 69 files / 3749 expect() calls (up from 1382 / 67 / 3621 in 0.10.2).
+
+### Fixed
+
+- **`compareSemver` mishandled prerelease / non-numeric version segments** (mulch-88fa, #26): inputs like `1.2.3-beta` ran each segment through `Number()`, so the patch became `NaN` and both `NaN < x` and `NaN > x` are false — the comparator falsely reported `1.2.3-beta == 1.2.4`. Now splits on the prerelease boundary up front, compares `major.minor.patch` numerically, and only consults the prerelease tail on a main-version tie per semver 2.0.0 §11.4 (release outranks prerelease, numeric identifiers compare numerically and rank below alphanumeric, longer identifier lists win on tie). Build metadata after `+` is ignored. Affects every code path that compares the local version to the upstream npm version (upgrade nudges, `ml upgrade`, `ml status`).
+- **Strict numeric parsing for `--limit` / `--budget` / `--min-group` / `--max-records`** (mulch-8bd6, #25): `ml ready --limit 10abc`, `ml prime --budget 3.7`, and `ml compact --auto --min-group 0` previously slipped through `Number.parseInt()`'s silent truncation. They now reject non-integer / non-positive input with a targeted error and `exit 1`, matching the convention `ml rank` already used (mx-5b9578). Each command inlines its own `parseStrictPositiveInt` rather than introducing a shared util — the plan was explicit about no new abstractions.
+
+### Changed
+
+- **`src/utils/version.ts` probes npm via `execFileSync`** (mulch-8405, #27): the last `execSync` call site in the codebase is gone. `getLatestVersion()` now spawns `npm` directly with an argv array instead of through a shell. Test helpers across `active-work`, `git`, `git-context`, `sync`, `prime`, `record`, `update`, `upgrade`, and `completions` were converted in the same pass for consistency. Acceptance: `grep -r 'execSync(' src test` returns zero hits. No behavior change.
+
+### Testing
+
+- 1453 tests across 69 files, 3749 expect() calls (up from 1382 / 67 / 3621 in 0.10.2).
+- **New direct suite for `src/utils/prime-ranking.ts`** (mulch-bc7b, #28): 36 tests covering every exported symbol — `resolveTierWeights`, `computeTrustScore`, `sortByTrust`, `whySurfaced`, `formatSurfaceReason`, `buildSurfaceAnnotations`, the `RECENT_AUTHORSHIP_DAYS` constant — plus `SurfaceReason` exhaustiveness. Previously covered only transitively through `ml prime` / `ml rank` integration tests.
+- **New direct suite for `src/utils/anchor-validity.ts`** (mulch-2525, #29): 19 tests covering `getRecordAnchors` (files / `dir_anchors` / `evidence.file` extraction, empty/non-string filtering, non-array guards), `computeAnchorValidity` (null fraction for zero anchors, all-valid, all-broken, partial, `evidence.file` resolution against `projectRoot`), and `passedAnchorGrace` (boundary inclusivity, fractional days, `graceDays=0` edge).
+
+## [0.10.2] - 2026-05-26
+
+A cleanup release: adds `ml move` for transferring records between domains (#23), rolls back the experimental pi-mulch extension (mulch-88e9), and removes the `pi.*` config namespace. Three built-in provider recipes remain: claude, cursor, codex. 1382 tests across 67 files / 3621 expect() calls (down from 1465 / 72 / 3856 in 0.10.1 — the pi test suites accounted for the difference).
+
+### Added
+
+- **`ml move <domain> <id> <target-domain>` — transfer records between domains** (#23): moves a record from one domain to another, preserving the record's ID so existing `relates_to` / `supersedes` cross-references continue to resolve. Validates the record against the target domain's `allowed_types` and `required_fields` before writing; `--force` bypasses domain-rule checks. `--dry-run` previews without writing. Scans all other expertise files for incoming references (`relates_to` / `supersedes`) and emits informational warnings so users can audit the link graph. Uses `withFileLock` on both source and target files for concurrent safety. See `src/commands/move.ts`.
+
+### Removed
+
+- **Pi-mulch extension rolled back** (mulch-88e9): the entire `extensions/pi/` directory, the `pi.*` config namespace (`pi.auto_prime`, `pi.scope_load.*`, `pi.tools`, `pi.commands`, `pi.agent_end_widget`), the `pi` built-in provider recipe, pi-aware onboarding variant (`:pi` marker suffix), and all pi test suites (`test/extensions/pi-*.test.ts`, `test/commands/setup.test.ts` pi coverage) have been removed. The experiment shipped in v0.10.1; it's being rolled back after evaluation. Users who relied on the pi integration can re-create the same behavior as a filesystem recipe under `.mulch/recipes/pi.{ts,sh}`. The `@earendil-works/pi-coding-agent` peer dependency is dropped.
+- **`pi.*` config schema removed** — the `pi` block in `mulch.config.yaml` is no longer recognized. Existing configs with `pi.*` keys will fail schema validation; remove the block to resolve.
+- **`ml setup pi` removed** — three built-in recipes remain: `claude`, `cursor`, `codex`.
+
+### Changed
+
+- **`ml onboard` drops the `:pi` marker suffix** — the version marker is now always `<!-- mulch-onboard:v<version> -->` without a variant suffix. Existing `:pi`-suffixed markers are detected as outdated and migrated on the next `ml onboard` run.
+
+### Testing
+
+- 1382 tests across 67 files, 3621 expect() calls (down from 1465 / 72 / 3856 in 0.10.1). The decrease reflects removal of pi extension test suites. New suite: `test/commands/move.test.ts` covers domain transfer, dry-run, force bypass, cross-reference scanning, and domain-rule validation.
+
 ## [0.10.1] - 2026-05-15
 
 A polish release that ships the `@os-eco/pi-mulch` extension (pl-5563), makes the close-session footer configurable, and generalizes `ml audit` from seeds-only to tracker-agnostic. The pi extension is the first first-class runtime integration — `ml prime` auto-fires on session_start, scope-load fires on tool_call, and `record_expertise` / `query_expertise` tools register inside the agent process so the model stops escaping into bash for record I/O. 1465 tests across 72 files / 3856 expect() calls (up from 1225 / 61 / 3047 in 0.10.0).
@@ -691,7 +826,13 @@ Per-domain governance, lifecycle hooks, soft-archive prune, and pluggable provid
 - Prime output formats: `xml`, `plain`, `markdown`, `--mcp` (JSON)
 - Context-aware prime via `--context` (filters by git changed files)
 
-[Unreleased]: https://github.com/jayminwest/mulch/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/jayminwest/mulch/compare/v0.10.7...HEAD
+[0.10.7]: https://github.com/jayminwest/mulch/compare/v0.10.6...v0.10.7
+[0.10.6]: https://github.com/jayminwest/mulch/compare/v0.10.5...v0.10.6
+[0.10.5]: https://github.com/jayminwest/mulch/compare/v0.10.4...v0.10.5
+[0.10.4]: https://github.com/jayminwest/mulch/compare/v0.10.3...v0.10.4
+[0.10.3]: https://github.com/jayminwest/mulch/compare/v0.10.2...v0.10.3
+[0.10.2]: https://github.com/jayminwest/mulch/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/jayminwest/mulch/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/jayminwest/mulch/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/jayminwest/mulch/compare/v0.8.0...v0.9.0

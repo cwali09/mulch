@@ -151,13 +151,13 @@ export function registerRestoreCommand(program: Command): void {
 					if (jsonMode) {
 						outputJsonError("restore", "No .mulch/ directory found. Run `mulch init` first.");
 					} else {
-						console.error("Error: No .mulch/ directory found. Run `mulch init` first.");
+						console.error(chalk.red("Error: No .mulch/ directory found. Run `mulch init` first."));
 					}
 				} else {
 					if (jsonMode) {
-						outputJsonError("restore", (err as Error).message);
+						outputJsonError("restore", err instanceof Error ? err.message : String(err));
 					} else {
-						console.error(`Error: ${(err as Error).message}`);
+						console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
 					}
 				}
 				process.exitCode = 1;

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { execSync, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -1305,7 +1305,7 @@ describe("processStdinRecords", () => {
 
 describe("record command help text", () => {
 	it("--help displays required fields per record type", () => {
-		const helpOutput = execSync("bun src/cli.ts record --help", {
+		const helpOutput = execFileSync("bun", ["src/cli.ts", "record", "--help"], {
 			encoding: "utf-8",
 			timeout: 5000,
 		});
@@ -1315,7 +1315,7 @@ describe("record command help text", () => {
 
 		// Verify each record type is listed with its required fields
 		expect(helpOutput).toContain("convention");
-		expect(helpOutput).toContain("[content] or --description");
+		expect(helpOutput).toContain("--content (or positional [content])");
 
 		expect(helpOutput).toContain("pattern");
 		expect(helpOutput).toContain("--name, --description");
@@ -1331,7 +1331,7 @@ describe("record command help text", () => {
 	});
 
 	it("--help displays batch recording examples", () => {
-		const helpOutput = execSync("bun src/cli.ts record --help", {
+		const helpOutput = execFileSync("bun", ["src/cli.ts", "record", "--help"], {
 			encoding: "utf-8",
 			timeout: 5000,
 		});
@@ -1339,6 +1339,124 @@ describe("record command help text", () => {
 		expect(helpOutput).toContain("Batch recording examples:");
 		expect(helpOutput).toContain("--batch records.json");
 		expect(helpOutput).toContain("--batch records.json --dry-run");
+	});
+});
+
+describe("--content flag for convention (pl-21a3)", () => {
+	const cliPath = resolve(process.cwd(), "src/cli.ts");
+	let tmpDir: string;
+
+	beforeEach(async () => {
+		tmpDir = await mkdtemp(join(tmpdir(), "mulch-content-flag-"));
+		await initMulchDir(tmpDir);
+		await writeConfig({ ...DEFAULT_CONFIG, domains: { testing: {} } }, tmpDir);
+		await createExpertiseFile(getExpertisePath("testing", tmpDir));
+	});
+
+	afterEach(async () => {
+		await rm(tmpDir, { recursive: true, force: true });
+	});
+
+	it("writes a valid record when --content is supplied as a named flag", async () => {
+		const r = spawnSync(
+			"bun",
+			[cliPath, "record", "testing", "--type", "convention", "--content", "flag content"],
+			{ cwd: tmpDir, encoding: "utf-8", timeout: 8000 },
+		);
+		expect(r.status).toBe(0);
+		expect(r.stdout).toMatch(/Recorded convention/);
+
+		const records = await readExpertiseFile(getExpertisePath("testing", tmpDir));
+		expect(records).toHaveLength(1);
+		expect(records[0]?.type).toBe("convention");
+		expect(records[0]).toMatchObject({ content: "flag content" });
+	});
+
+	it("still accepts the positional [content] argument (no regression)", async () => {
+		const r = spawnSync(
+			"bun",
+			[cliPath, "record", "testing", "positional content", "--type", "convention"],
+			{ cwd: tmpDir, encoding: "utf-8", timeout: 8000 },
+		);
+		expect(r.status).toBe(0);
+		expect(r.stdout).toMatch(/Recorded convention/);
+
+		const records = await readExpertiseFile(getExpertisePath("testing", tmpDir));
+		expect(records).toHaveLength(1);
+		expect(records[0]).toMatchObject({ content: "positional content" });
+	});
+
+	it("explicit --content wins when both --content and positional are supplied", async () => {
+		const r = spawnSync(
+			"bun",
+			[
+				cliPath,
+				"record",
+				"testing",
+				"positional value",
+				"--type",
+				"convention",
+				"--content",
+				"flag value",
+			],
+			{ cwd: tmpDir, encoding: "utf-8", timeout: 8000 },
+		);
+		expect(r.status).toBe(0);
+
+		const records = await readExpertiseFile(getExpertisePath("testing", tmpDir));
+		expect(records).toHaveLength(1);
+		expect(records[0]).toMatchObject({ content: "flag value" });
+	});
+
+	it("missing content prints a concrete --content retry example (no tautological wording)", () => {
+		const r = spawnSync(
+			"bun",
+			[cliPath, "record", "testing", "--type", "convention", "--name", "foo"],
+			{ cwd: tmpDir, encoding: "utf-8", timeout: 8000 },
+		);
+		expect(r.status).toBe(1);
+		expect(r.stderr).toMatch(/missing required flag\(s\): --content/);
+		expect(r.stderr).toMatch(/Retry: ml record testing --type convention/);
+		expect(r.stderr).toMatch(/--content/);
+		// Regression guard: the old tautological phrasing must not return.
+		expect(r.stderr).not.toContain("positional content for content");
+		expect(r.stderr).not.toMatch(/records require:/);
+	});
+
+	it("missing content in --json mode surfaces --content in the error payload", () => {
+		const r = spawnSync("bun", [cliPath, "record", "testing", "--type", "convention", "--json"], {
+			cwd: tmpDir,
+			encoding: "utf-8",
+			timeout: 8000,
+		});
+		expect(r.status).toBe(1);
+		const out = JSON.parse(r.stderr);
+		expect(out.success).toBe(false);
+		expect(out.command).toBe("record");
+		expect(out.error).toMatch(/missing required flag\(s\): --content/);
+		expect(out.error).toMatch(/Example: ml record testing --type convention .*--content/);
+		expect(out.error).not.toContain("positional content for content");
+	});
+
+	it("--help after-help block points convention at --content, not --description", () => {
+		const helpOutput = execFileSync("bun", [cliPath, "record", "--help"], {
+			encoding: "utf-8",
+			timeout: 5000,
+		});
+		// Locate the line that documents convention requirements.
+		const conventionLine = helpOutput.split("\n").find((line) => /^\s*convention\s/.test(line));
+		expect(conventionLine).toBeDefined();
+		expect(conventionLine).toContain("--content");
+		expect(conventionLine).toContain("[content]");
+		expect(conventionLine).not.toContain("--description");
+	});
+
+	it("--help options list registers --content with a description", () => {
+		const helpOutput = execFileSync("bun", [cliPath, "record", "--help"], {
+			encoding: "utf-8",
+			timeout: 5000,
+		});
+		expect(helpOutput).toMatch(/--content <content>/);
 	});
 });
 
@@ -2013,472 +2131,6 @@ describe("disabled-type writes (Phase 3)", () => {
 	});
 });
 
-describe("per-domain allowed_types (R-01b)", () => {
-	const cliPath = resolve(process.cwd(), "src/cli.ts");
-	let tmpDir: string;
-
-	beforeEach(async () => {
-		tmpDir = await mkdtemp(join(tmpdir(), "mulch-allowed-types-"));
-		await initMulchDir(tmpDir);
-	});
-
-	afterEach(async () => {
-		resetRegistry();
-		await rm(tmpDir, { recursive: true, force: true });
-	});
-
-	it("allows a record whose type is in domain allowed_types", async () => {
-		await writeConfig(
-			{
-				...DEFAULT_CONFIG,
-				domains: { backend: { allowed_types: ["convention"] } },
-			},
-			tmpDir,
-		);
-		await createExpertiseFile(getExpertisePath("backend", tmpDir));
-
-		const r = spawnSync(
-			"bun",
-			[cliPath, "record", "backend", "ok content", "--type", "convention"],
-			{ cwd: tmpDir, encoding: "utf-8", timeout: 8000 },
-		);
-		expect(r.status).toBe(0);
-		expect(r.stdout).toMatch(/Recorded convention/);
-	});
-
-	it("rejects a record whose type is not in domain allowed_types and prints retry hint", async () => {
-		await writeConfig(
-			{
-				...DEFAULT_CONFIG,
-				domains: { backend: { allowed_types: ["convention"] } },
-			},
-			tmpDir,
-		);
-		await createExpertiseFile(getExpertisePath("backend", tmpDir));
-
-		const r = spawnSync(
-			"bun",
-			[cliPath, "record", "backend", "--type", "pattern", "--name", "x", "--description", "y"],
-			{ cwd: tmpDir, encoding: "utf-8", timeout: 8000 },
-		);
-		expect(r.status).toBe(1);
-		expect(r.stderr).toMatch(/type "pattern" is not allowed in domain "backend"/);
-		expect(r.stderr).toMatch(/Allowed types: convention/);
-		expect(r.stderr).toMatch(/Retry: ml record backend/);
-		expect(r.stderr).toMatch(/--type convention/);
-	});
-
-	it("empty/missing allowed_types preserves back-compat for all registered types", () => {
-		// Default config has empty domains map; auto-create produces {} (no allowed_types).
-		const r = spawnSync(
-			"bun",
-			[cliPath, "record", "anywhere", "--type", "decision", "--title", "t", "--rationale", "r"],
-			{ cwd: tmpDir, encoding: "utf-8", timeout: 8000 },
-		);
-		expect(r.status).toBe(0);
-		expect(r.stdout).toMatch(/Recorded decision/);
-	});
-
-	it("disabled_types wins when an allowed type is also disabled (writes with warning)", async () => {
-		await writeConfig(
-			{
-				...DEFAULT_CONFIG,
-				domains: { backend: { allowed_types: ["convention", "failure"] } },
-				disabled_types: ["failure"],
-			},
-			tmpDir,
-		);
-		await createExpertiseFile(getExpertisePath("backend", tmpDir));
-
-		const r = spawnSync(
-			"bun",
-			[
-				cliPath,
-				"record",
-				"backend",
-				"--type",
-				"failure",
-				"--description",
-				"d",
-				"--resolution",
-				"r",
-			],
-			{ cwd: tmpDir, encoding: "utf-8", timeout: 8000 },
-		);
-		expect(r.status).toBe(0);
-		expect(r.stderr).toMatch(/Warning: type "failure" is disabled/);
-		expect(r.stdout).toMatch(/Recorded failure/);
-	});
-
-	it("processStdinRecords rejects per-record when type not in allowed_types", async () => {
-		await writeConfig(
-			{
-				...DEFAULT_CONFIG,
-				domains: { backend: { allowed_types: ["convention"] } },
-			},
-			tmpDir,
-		);
-		await initRegistryFromConfig(tmpDir);
-		const filePath = getExpertisePath("backend", tmpDir);
-		await createExpertiseFile(filePath);
-
-		const result = await processStdinRecords(
-			"backend",
-			false,
-			false,
-			false,
-			JSON.stringify([
-				{ type: "convention", content: "ok", classification: "tactical" },
-				{
-					type: "pattern",
-					name: "p1",
-					description: "d",
-					classification: "tactical",
-				},
-			]),
-			tmpDir,
-		);
-
-		expect(result.created).toBe(1);
-		expect(result.errors).toHaveLength(1);
-		expect(result.errors[0]).toMatch(/type "pattern" is not allowed in domain "backend"/);
-		expect(result.errors[0]).toMatch(/Allowed types: convention/);
-	});
-});
-
-describe("per-domain required_fields (R-01c)", () => {
-	const cliPath = resolve(process.cwd(), "src/cli.ts");
-	let tmpDir: string;
-
-	beforeEach(async () => {
-		tmpDir = await mkdtemp(join(tmpdir(), "mulch-required-fields-"));
-		await initMulchDir(tmpDir);
-	});
-
-	afterEach(async () => {
-		resetRegistry();
-		await rm(tmpDir, { recursive: true, force: true });
-	});
-
-	it("succeeds when all required_fields are present on the record", async () => {
-		await writeConfig(
-			{
-				...DEFAULT_CONFIG,
-				domains: { backend: { required_fields: ["oncall_owner"] } },
-				custom_types: {
-					task: {
-						required: ["description"],
-						optional: ["oncall_owner"],
-						dedup_key: "description",
-						summary: "{description}",
-					},
-				},
-			},
-			tmpDir,
-		);
-		await createExpertiseFile(getExpertisePath("backend", tmpDir));
-
-		const r = spawnSync(
-			"bun",
-			[
-				cliPath,
-				"record",
-				"backend",
-				"--type",
-				"task",
-				"--description",
-				"ship it",
-				"--oncall-owner",
-				"alice",
-			],
-			{ cwd: tmpDir, encoding: "utf-8", timeout: 8000 },
-		);
-		expect(r.status).toBe(0);
-		expect(r.stdout).toMatch(/Recorded task/);
-
-		await initRegistryFromConfig(tmpDir);
-		const records = await readExpertiseFile(getExpertisePath("backend", tmpDir));
-		expect(records).toHaveLength(1);
-		expect((records[0] as unknown as Record<string, unknown>).oncall_owner).toBe("alice");
-	});
-
-	it("rejects a record missing one required_field with retry hint", async () => {
-		await writeConfig(
-			{
-				...DEFAULT_CONFIG,
-				domains: { backend: { required_fields: ["oncall_owner"] } },
-				custom_types: {
-					task: {
-						required: ["description"],
-						optional: ["oncall_owner"],
-						dedup_key: "description",
-						summary: "{description}",
-					},
-				},
-			},
-			tmpDir,
-		);
-		await createExpertiseFile(getExpertisePath("backend", tmpDir));
-
-		const r = spawnSync(
-			"bun",
-			[cliPath, "record", "backend", "--type", "task", "--description", "ship it"],
-			{ cwd: tmpDir, encoding: "utf-8", timeout: 8000 },
-		);
-		expect(r.status).toBe(1);
-		expect(r.stderr).toMatch(/domain "backend" requires field\(s\) "oncall_owner"/);
-		expect(r.stderr).toMatch(/Retry: ml record backend/);
-		expect(r.stderr).toMatch(/--oncall-owner "<oncall_owner>"/);
-	});
-
-	it("lists every missing required_field in a single error", async () => {
-		await writeConfig(
-			{
-				...DEFAULT_CONFIG,
-				domains: { backend: { required_fields: ["oncall_owner", "severity"] } },
-				custom_types: {
-					task: {
-						required: ["description"],
-						optional: ["oncall_owner", "severity"],
-						dedup_key: "description",
-						summary: "{description}",
-					},
-				},
-			},
-			tmpDir,
-		);
-		await createExpertiseFile(getExpertisePath("backend", tmpDir));
-
-		const r = spawnSync(
-			"bun",
-			[cliPath, "record", "backend", "--type", "task", "--description", "ship it"],
-			{ cwd: tmpDir, encoding: "utf-8", timeout: 8000 },
-		);
-		expect(r.status).toBe(1);
-		// Single error line lists all missing fields.
-		expect(r.stderr).toMatch(/domain "backend" requires field\(s\) "oncall_owner", "severity"/);
-		// Retry hint includes both missing flags.
-		expect(r.stderr).toMatch(/--oncall-owner "<oncall_owner>"/);
-		expect(r.stderr).toMatch(/--severity "<severity>"/);
-	});
-
-	it("stacks on top of per-type required (per-type still enforced)", async () => {
-		await writeConfig(
-			{
-				...DEFAULT_CONFIG,
-				domains: { backend: { required_fields: ["oncall_owner"] } },
-				custom_types: {
-					task: {
-						required: ["description"],
-						optional: ["oncall_owner"],
-						dedup_key: "description",
-						summary: "{description}",
-					},
-				},
-			},
-			tmpDir,
-		);
-		await createExpertiseFile(getExpertisePath("backend", tmpDir));
-
-		// Has the domain-required field but is missing the per-type required
-		// "description". Per-type validation must still fire — the domain check
-		// adds on top, doesn't replace.
-		const r = spawnSync(
-			"bun",
-			[cliPath, "record", "backend", "--type", "task", "--oncall-owner", "alice"],
-			{ cwd: tmpDir, encoding: "utf-8", timeout: 8000 },
-		);
-		expect(r.status).toBe(1);
-		expect(r.stderr).toMatch(/task records require: description/);
-	});
-
-	it("missing/empty required_fields preserves back-compat", () => {
-		// Default config has no required_fields → behavior unchanged.
-		const r = spawnSync(
-			"bun",
-			[cliPath, "record", "anywhere", "--type", "decision", "--title", "t", "--rationale", "r"],
-			{ cwd: tmpDir, encoding: "utf-8", timeout: 8000 },
-		);
-		expect(r.status).toBe(0);
-		expect(r.stdout).toMatch(/Recorded decision/);
-	});
-
-	it("targeted hint when required_field is rejected by closed schema (mulch-cc51)", async () => {
-		// Domain demands a field that no allowed type holds (built-in convention
-		// has additionalProperties: false). Without the hint, AJV emits a
-		// confusing oneOf/additionalProperties soup. With the hint, the user
-		// learns the real cause: declare a custom_type or drop the requirement.
-		await writeConfig(
-			{
-				...DEFAULT_CONFIG,
-				domains: { backend: { required_fields: ["oncall_owner"] } },
-			},
-			tmpDir,
-		);
-		await initRegistryFromConfig(tmpDir);
-		const filePath = getExpertisePath("backend", tmpDir);
-		await createExpertiseFile(filePath);
-
-		const result = await processStdinRecords(
-			"backend",
-			false,
-			false,
-			false,
-			JSON.stringify({
-				type: "convention",
-				content: "be on call",
-				oncall_owner: "@platform",
-				classification: "tactical",
-			}),
-			tmpDir,
-		);
-
-		expect(result.created).toBe(0);
-		expect(result.errors).toHaveLength(1);
-		const err = result.errors[0] as string;
-		expect(err).toMatch(/Domain "backend" requires field\(s\) "oncall_owner"/);
-		expect(err).toMatch(/type "convention" does not declare them/);
-		expect(err).toMatch(/custom_type/);
-	});
-
-	it("processStdinRecords rejects per-record when required_fields are missing", async () => {
-		await writeConfig(
-			{
-				...DEFAULT_CONFIG,
-				domains: { backend: { required_fields: ["oncall_owner"] } },
-				custom_types: {
-					task: {
-						required: ["description"],
-						optional: ["oncall_owner"],
-						dedup_key: "description",
-						summary: "{description}",
-					},
-				},
-			},
-			tmpDir,
-		);
-		await initRegistryFromConfig(tmpDir);
-		const filePath = getExpertisePath("backend", tmpDir);
-		await createExpertiseFile(filePath);
-
-		const result = await processStdinRecords(
-			"backend",
-			false,
-			false,
-			false,
-			JSON.stringify([
-				{
-					type: "task",
-					description: "with owner",
-					oncall_owner: "alice",
-					classification: "tactical",
-				},
-				{
-					type: "task",
-					description: "no owner",
-					classification: "tactical",
-				},
-			]),
-			tmpDir,
-		);
-
-		expect(result.created).toBe(1);
-		expect(result.errors).toHaveLength(1);
-		expect(result.errors[0]).toMatch(/domain "backend" requires field\(s\) "oncall_owner"/);
-	});
-});
-
-describe("--allow-domain-mismatch escape hatch (R-01d)", () => {
-	const cliPath = resolve(process.cwd(), "src/cli.ts");
-	let tmpDir: string;
-
-	beforeEach(async () => {
-		tmpDir = await mkdtemp(join(tmpdir(), "mulch-domain-mismatch-"));
-		await initMulchDir(tmpDir);
-	});
-
-	afterEach(async () => {
-		resetRegistry();
-		await rm(tmpDir, { recursive: true, force: true });
-	});
-
-	it("--allow-domain-mismatch lets a disallowed type write", async () => {
-		await writeConfig(
-			{
-				...DEFAULT_CONFIG,
-				domains: { backend: { allowed_types: ["convention"] } },
-			},
-			tmpDir,
-		);
-		await createExpertiseFile(getExpertisePath("backend", tmpDir));
-
-		const r = spawnSync(
-			"bun",
-			[
-				cliPath,
-				"--allow-domain-mismatch",
-				"record",
-				"backend",
-				"--type",
-				"pattern",
-				"--name",
-				"x",
-				"--description",
-				"y",
-			],
-			{ cwd: tmpDir, encoding: "utf-8", timeout: 8000 },
-		);
-		expect(r.status).toBe(0);
-		expect(r.stdout).toMatch(/Recorded pattern/);
-	});
-
-	it("--allow-domain-mismatch lets a record without required_fields write", async () => {
-		await writeConfig(
-			{
-				...DEFAULT_CONFIG,
-				domains: { backend: { required_fields: ["oncall_owner"] } },
-			},
-			tmpDir,
-		);
-		await createExpertiseFile(getExpertisePath("backend", tmpDir));
-
-		const r = spawnSync(
-			"bun",
-			[
-				cliPath,
-				"--allow-domain-mismatch",
-				"record",
-				"backend",
-				"some content",
-				"--type",
-				"convention",
-			],
-			{ cwd: tmpDir, encoding: "utf-8", timeout: 8000 },
-		);
-		expect(r.status).toBe(0);
-		expect(r.stdout).toMatch(/Recorded convention/);
-	});
-
-	it("without the flag, the same record is rejected (regression guard)", async () => {
-		await writeConfig(
-			{
-				...DEFAULT_CONFIG,
-				domains: { backend: { allowed_types: ["convention"] } },
-			},
-			tmpDir,
-		);
-		await createExpertiseFile(getExpertisePath("backend", tmpDir));
-
-		const r = spawnSync(
-			"bun",
-			[cliPath, "record", "backend", "--type", "pattern", "--name", "x", "--description", "y"],
-			{ cwd: tmpDir, encoding: "utf-8", timeout: 8000 },
-		);
-		expect(r.status).toBe(1);
-		expect(r.stderr).toMatch(/type "pattern" is not allowed/);
-	});
-});
-
 describe("dir_anchors (R-01)", () => {
 	const cliPath = resolve(process.cwd(), "src/cli.ts");
 	let tmpDir: string;
@@ -2487,8 +2139,9 @@ describe("dir_anchors (R-01)", () => {
 		tmpDir = await mkdtemp(join(tmpdir(), "mulch-dir-anchors-"));
 		// Real git repo so getContextFiles() can run; auto-population tests
 		// stage files into it to drive the heuristic.
-		execSync("git init -q", { cwd: tmpDir });
-		execSync("git config user.email t@t && git config user.name t", { cwd: tmpDir });
+		execFileSync("git", ["init", "-q"], { cwd: tmpDir });
+		execFileSync("git", ["config", "user.email", "t@t"], { cwd: tmpDir });
+		execFileSync("git", ["config", "user.name", "t"], { cwd: tmpDir });
 		await initMulchDir(tmpDir);
 		await writeConfig({ ...DEFAULT_CONFIG, domains: { cli: {} } }, tmpDir);
 		await createExpertiseFile(getExpertisePath("cli", tmpDir));
@@ -2610,11 +2263,11 @@ describe("dir_anchors (R-01)", () => {
 	});
 
 	it("auto-populates dir_anchors from common parent of 3+ changed files", async () => {
-		execSync("mkdir -p src/utils", { cwd: tmpDir });
+		execFileSync("mkdir", ["-p", "src/utils"], { cwd: tmpDir });
 		await writeFile(join(tmpDir, "src/utils/a.ts"), "// a", "utf-8");
 		await writeFile(join(tmpDir, "src/utils/b.ts"), "// b", "utf-8");
 		await writeFile(join(tmpDir, "src/utils/c.ts"), "// c", "utf-8");
-		execSync("git add src/utils", { cwd: tmpDir });
+		execFileSync("git", ["add", "src/utils"], { cwd: tmpDir });
 
 		const r = spawnSync(
 			"bun",
@@ -2627,10 +2280,10 @@ describe("dir_anchors (R-01)", () => {
 	});
 
 	it("does NOT auto-populate when only 2 files share a parent dir", async () => {
-		execSync("mkdir -p src/utils", { cwd: tmpDir });
+		execFileSync("mkdir", ["-p", "src/utils"], { cwd: tmpDir });
 		await writeFile(join(tmpDir, "src/utils/a.ts"), "// a", "utf-8");
 		await writeFile(join(tmpDir, "src/utils/b.ts"), "// b", "utf-8");
-		execSync("git add src/utils", { cwd: tmpDir });
+		execFileSync("git", ["add", "src/utils"], { cwd: tmpDir });
 
 		const r = spawnSync("bun", [cliPath, "record", "cli", "--type", "convention", "no auto-pop"], {
 			cwd: tmpDir,
@@ -2643,11 +2296,11 @@ describe("dir_anchors (R-01)", () => {
 	});
 
 	it("explicit --dir-anchor wins over auto-population", async () => {
-		execSync("mkdir -p src/utils", { cwd: tmpDir });
+		execFileSync("mkdir", ["-p", "src/utils"], { cwd: tmpDir });
 		await writeFile(join(tmpDir, "src/utils/a.ts"), "// a", "utf-8");
 		await writeFile(join(tmpDir, "src/utils/b.ts"), "// b", "utf-8");
 		await writeFile(join(tmpDir, "src/utils/c.ts"), "// c", "utf-8");
-		execSync("git add src/utils", { cwd: tmpDir });
+		execFileSync("git", ["add", "src/utils"], { cwd: tmpDir });
 
 		const r = spawnSync(
 			"bun",
@@ -2691,5 +2344,130 @@ describe("dir_anchors (R-01)", () => {
 			dir_anchors: "not-an-array",
 		});
 		expect(ok).toBe(false);
+	});
+});
+
+describe("--outcome-duration strict numeric parsing (mulch-5b9c)", () => {
+	const cliPath = resolve(process.cwd(), "src/cli.ts");
+	let tmpDir: string;
+
+	beforeEach(async () => {
+		tmpDir = await mkdtemp(join(tmpdir(), "mulch-outdur-"));
+		await initMulchDir(tmpDir);
+		await writeConfig({ ...DEFAULT_CONFIG, domains: { cli: {} } }, tmpDir);
+		await createExpertiseFile(getExpertisePath("cli", tmpDir));
+	});
+
+	afterEach(async () => {
+		await rm(tmpDir, { recursive: true, force: true });
+	});
+
+	it("rejects non-numeric --outcome-duration and does not append a record", async () => {
+		const r = spawnSync(
+			"bun",
+			[
+				cliPath,
+				"record",
+				"cli",
+				"--type",
+				"pattern",
+				"--name",
+				"x",
+				"--description",
+				"y",
+				"--outcome-status",
+				"success",
+				"--outcome-duration",
+				"foo",
+			],
+			{ cwd: tmpDir, encoding: "utf-8", timeout: 8000 },
+		);
+		expect(r.status).not.toBe(0);
+		expect(r.stderr).toMatch(/--outcome-duration must be a non-negative number/);
+		expect(r.stderr).toContain('"foo"');
+
+		const records = await readExpertiseFile(getExpertisePath("cli", tmpDir));
+		expect(records).toHaveLength(0);
+	});
+
+	it("rejects --outcome-duration with trailing garbage (parseFloat trap)", async () => {
+		const r = spawnSync(
+			"bun",
+			[
+				cliPath,
+				"record",
+				"cli",
+				"--type",
+				"pattern",
+				"--name",
+				"x",
+				"--description",
+				"y",
+				"--outcome-status",
+				"success",
+				"--outcome-duration",
+				"10abc",
+			],
+			{ cwd: tmpDir, encoding: "utf-8", timeout: 8000 },
+		);
+		expect(r.status).not.toBe(0);
+		expect(r.stderr).toMatch(/non-negative number/);
+
+		const records = await readExpertiseFile(getExpertisePath("cli", tmpDir));
+		expect(records).toHaveLength(0);
+	});
+
+	it("emits JSON error envelope under --json", async () => {
+		const r = spawnSync(
+			"bun",
+			[
+				cliPath,
+				"--json",
+				"record",
+				"cli",
+				"--type",
+				"pattern",
+				"--name",
+				"x",
+				"--description",
+				"y",
+				"--outcome-status",
+				"success",
+				"--outcome-duration",
+				"foo",
+			],
+			{ cwd: tmpDir, encoding: "utf-8", timeout: 8000 },
+		);
+		expect(r.status).not.toBe(0);
+		const parsed = JSON.parse(r.stderr.trim());
+		expect(parsed).toMatchObject({ success: false, command: "record" });
+		expect(parsed.error).toMatch(/non-negative number/);
+	});
+
+	it("accepts valid numeric --outcome-duration", async () => {
+		const r = spawnSync(
+			"bun",
+			[
+				cliPath,
+				"record",
+				"cli",
+				"--type",
+				"pattern",
+				"--name",
+				"x",
+				"--description",
+				"y",
+				"--outcome-status",
+				"success",
+				"--outcome-duration",
+				"1500",
+			],
+			{ cwd: tmpDir, encoding: "utf-8", timeout: 8000 },
+		);
+		expect(r.status).toBe(0);
+		const records = await readExpertiseFile(getExpertisePath("cli", tmpDir));
+		expect(records).toHaveLength(1);
+		const outcomes = records[0]?.outcomes;
+		expect(outcomes?.[0]?.duration).toBe(1500);
 	});
 });

@@ -13,8 +13,46 @@ jobs:
       - uses: actions/checkout@v6
 
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pin explicitly so setup-bun doesn't resolve the `engines.bun`
+          # semver range via the GitHub tags API, which intermittently 404s.
+          bun-version: latest
 
-      - run: bun install
-      - run: bun run lint
-      - run: bun run typecheck
-      - run: bun test
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # test:ci is the check:coverage gate's CI variant (junit/lcov
+      # reporters for the artifact uploads below) — aliased in
+      # scripts/ci-parity-config.json.
+      - name: Run tests (CI reporter)
+        run: bun run test:ci
+
+      # Runs the full canonical gate manifest (lint, typecheck,
+      # check:agents/dups/deps/size/debt/coverage/ci-parity) via the
+      # quiet runner — see docs/check-all-standard.md at the os-eco root.
+      - name: Quality gates (check:all)
+        run: bun run check:all
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bun-test-coverage
+          path: coverage/lcov.info
+          if-no-files-found: warn
+
+      - name: Upload test junit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bun-test-junit
+          path: junit.xml
+          if-no-files-found: warn
+
+      - name: Test timing summary
+        if: always()
+        run: bun run report:timing
+
+      - name: Code-quality metrics summary
+        if: always()
+        run: bun run report:quality

@@ -15,6 +15,7 @@ import { getRecordSummary } from "../utils/format.ts";
 import { runHooks } from "../utils/hooks.ts";
 import { outputJson, outputJsonError } from "../utils/json-output.ts";
 import { withFileLock } from "../utils/lock.ts";
+import { parseStrictPositiveInt } from "../utils/numeric-flags.ts";
 import { accent, brand, isQuiet } from "../utils/palette.ts";
 
 // Payload sent to `pre-compact` hooks. A hook may print `{ replacement: <full
@@ -272,8 +273,32 @@ async function handleAuto(
 
 	const dryRun = options.dryRun === true;
 	const skipConfirmation = options.yes === true;
-	const minGroupSize = Number.parseInt(options.minGroup as string, 10) || 5;
-	const maxRecords = Number.parseInt(options.maxRecords as string, 10) || 50;
+
+	const minGroupRaw = options.minGroup as string | undefined;
+	const minGroupSize = minGroupRaw === undefined ? 5 : parseStrictPositiveInt(minGroupRaw);
+	if (minGroupSize === null) {
+		const msg = `--min-group must be a positive integer (got "${minGroupRaw}").`;
+		if (jsonMode) {
+			outputJsonError("compact", msg);
+		} else {
+			console.error(chalk.red(`Error: ${msg}`));
+		}
+		process.exitCode = 1;
+		return;
+	}
+
+	const maxRecordsRaw = options.maxRecords as string | undefined;
+	const maxRecords = maxRecordsRaw === undefined ? 50 : parseStrictPositiveInt(maxRecordsRaw);
+	if (maxRecords === null) {
+		const msg = `--max-records must be a positive integer (got "${maxRecordsRaw}").`;
+		if (jsonMode) {
+			outputJsonError("compact", msg);
+		} else {
+			console.error(chalk.red(`Error: ${msg}`));
+		}
+		process.exitCode = 1;
+		return;
+	}
 
 	// Filter to specific domain if provided, otherwise check all domains
 	const domainsToCheck = domain ? [domain] : Object.keys(config.domains);
@@ -748,7 +773,7 @@ async function handleApply(
 		try {
 			indicesToRemove = resolveRecordIds(records, identifiers);
 		} catch (err) {
-			const msg = (err as Error).message;
+			const msg = err instanceof Error ? err.message : String(err);
 			if (jsonMode) {
 				outputJsonError("compact", msg);
 			} else {

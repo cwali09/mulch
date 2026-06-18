@@ -25,6 +25,7 @@ import { getContextFiles, getCurrentCommit } from "../utils/git-context.ts";
 import { runHooks } from "../utils/hooks.ts";
 import { outputJson, outputJsonError } from "../utils/json-output.ts";
 import { withFileLock } from "../utils/lock.ts";
+import { parseStrictNonNegativeNumber } from "../utils/numeric-flags.ts";
 import { brand, isQuiet } from "../utils/palette.ts";
 import { isAllowDomainMismatch } from "../utils/runtime-flags.ts";
 
@@ -143,6 +144,7 @@ function buildRetryCommand(
 		parts.push(`--classification ${options.classification as string}`);
 	}
 	if (options.name) parts.push(`--name ${JSON.stringify(options.name as string)}`);
+	if (options.content) parts.push(`--content ${JSON.stringify(options.content as string)}`);
 	if (options.description)
 		parts.push(`--description ${JSON.stringify(options.description as string)}`);
 	if (options.resolution)
@@ -445,6 +447,10 @@ export function registerRecordCommand(program: Command): void {
 				.default("tactical"),
 		)
 		.option("--name <name>", "name of the convention or pattern")
+		.option(
+			"--content <content>",
+			"content for convention records (explicit flag wins over positional [content])",
+		)
 		.option("--description <description>", "description of the record")
 		.option("--resolution <resolution>", "resolution for failure records")
 		.option("--title <title>", "title for decision records")
@@ -487,7 +493,7 @@ export function registerRecordCommand(program: Command): void {
 			"after",
 			`
 Required fields per record type:
-  convention   [content] or --description
+  convention   --content (or positional [content])
   pattern      --name, --description (or [content])
   failure      --description, --resolution
   decision     --title, --rationale
@@ -798,7 +804,18 @@ Batch recording examples:
 					status: options.outcomeStatus as "success" | "failure" | "partial",
 				};
 				if (options.outcomeDuration !== undefined) {
-					o.duration = Number.parseFloat(options.outcomeDuration as string);
+					const parsed = parseStrictNonNegativeNumber(options.outcomeDuration as string);
+					if (parsed === null) {
+						const msg = `--outcome-duration must be a non-negative number (got "${options.outcomeDuration as string}").`;
+						if (jsonMode) {
+							outputJsonError("record", msg);
+						} else {
+							console.error(chalk.red(`Error: ${msg}`));
+						}
+						process.exitCode = 1;
+						return;
+					}
+					o.duration = parsed;
 				}
 				if (options.outcomeTestResults) {
 					o.test_results = options.outcomeTestResults as string;
@@ -902,15 +919,17 @@ Batch recording examples:
 			});
 
 			if (!built.record) {
-				const requireList = def.required.join(", ");
-				const fallback = positionalFallbackField(def);
-				const fallbackHint = fallback ? ` (or positional content for ${fallback})` : "";
-				const msg = `${def.name} records require: ${requireList}${fallbackHint}.`;
+				const missingFlags = built.missing.map((m) => m.flag);
+				const flagList =
+					missingFlags.length > 0 ? missingFlags.join(", ") : def.required.join(", ");
+				const retryCmd = buildRetryCommand(domain, content, options, built.missing);
+				const msg = `${def.name} records are missing required flag(s): ${flagList}. Example: ${retryCmd}`;
 				if (jsonMode) {
 					outputJsonError("record", msg);
 				} else {
-					console.error(chalk.red(`Error: ${msg}`));
-					const retryCmd = buildRetryCommand(domain, content, options, built.missing);
+					console.error(
+						chalk.red(`Error: ${def.name} records are missing required flag(s): ${flagList}.`),
+					);
 					console.error(chalk.dim(`  Retry: ${retryCmd}`));
 				}
 				process.exitCode = 1;

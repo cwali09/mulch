@@ -5,6 +5,7 @@ import { getExpertisePath, readConfig } from "../utils/config.ts";
 import { readExpertiseFile } from "../utils/expertise.ts";
 import { formatTimeAgo, getRecordSummary } from "../utils/format.ts";
 import { outputJson, outputJsonError } from "../utils/json-output.ts";
+import { parseStrictPositiveInt } from "../utils/numeric-flags.ts";
 import { accent } from "../utils/palette.ts";
 
 interface AnnotatedRecord {
@@ -43,13 +44,14 @@ export function registerReadyCommand(program: Command): void {
 
 			try {
 				const config = await readConfig();
-				const limit = Number.parseInt(options.limit, 10);
+				const limit = parseStrictPositiveInt(options.limit);
 
-				if (Number.isNaN(limit) || limit < 1) {
+				if (limit === null) {
+					const msg = `--limit must be a positive integer (got "${options.limit}").`;
 					if (jsonMode) {
-						outputJsonError("ready", "Limit must be a positive integer.");
+						outputJsonError("ready", msg);
 					} else {
-						console.error(chalk.red("Error: --limit must be a positive integer."));
+						console.error(chalk.red(`Error: ${msg}`));
 					}
 					process.exitCode = 1;
 					return;
@@ -84,9 +86,11 @@ export function registerReadyCommand(program: Command): void {
 						sinceMs = parseDuration(options.since);
 					} catch (err) {
 						if (jsonMode) {
-							outputJsonError("ready", (err as Error).message);
+							outputJsonError("ready", err instanceof Error ? err.message : String(err));
 						} else {
-							console.error(chalk.red(`Error: ${(err as Error).message}`));
+							console.error(
+								chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`),
+							);
 						}
 						process.exitCode = 1;
 						return;
@@ -162,13 +166,13 @@ export function registerReadyCommand(program: Command): void {
 					if (jsonMode) {
 						outputJsonError("ready", "No .mulch/ directory found. Run `mulch init` first.");
 					} else {
-						console.error("Error: No .mulch/ directory found. Run `mulch init` first.");
+						console.error(chalk.red("Error: No .mulch/ directory found. Run `mulch init` first."));
 					}
 				} else {
 					if (jsonMode) {
-						outputJsonError("ready", (err as Error).message);
+						outputJsonError("ready", err instanceof Error ? err.message : String(err));
 					} else {
-						console.error(`Error: ${(err as Error).message}`);
+						console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
 					}
 				}
 				process.exitCode = 1;
